@@ -1,8 +1,9 @@
-Usage:
+# Usage:
 
-Add buildSrc to project's root folder
+###### Add buildSrc to project's root folder
 
-Add to build script:
+###### Add to build script:
+``` kotlin
 tasks.register<CsvToLbScriptTask>("processCsv") {
     description = "Generates LiquiBase scripts from google sheets."
     group = JavaBasePlugin.DOCUMENTATION_GROUP
@@ -11,3 +12,4 @@ tasks.register<CsvToLbScriptTask>("processCsv") {
     lbsRoot = "root path to store lb script files"
     googleApiKeyPath = Path("path to file with Google API key")
 }
+```
