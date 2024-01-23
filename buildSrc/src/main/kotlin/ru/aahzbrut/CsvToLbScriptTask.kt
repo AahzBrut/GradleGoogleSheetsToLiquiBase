@@ -48,6 +48,8 @@ abstract class CsvToLbScriptTask : DefaultTask() {
                     val sheetId = sheet["sheetId"].toString()
                     val title = sheet["title"] as String
 
+                    logger.lifecycle("Processing sheet: $title")
+
                     val sheetRequest =
                         HttpRequest.newBuilder(URI("https://docs.google.com/spreadsheets/d/$spreadSheetId/export?format=csv&id=$spreadSheetId&gid=$sheetId"))
                             .GET().build()
@@ -71,6 +73,7 @@ abstract class CsvToLbScriptTask : DefaultTask() {
             bodyTypesDst.parent.createDirectories()
             bodyTypesDst.createFile()
         }
+        logger.lifecycle("Writing script file: ${bodyTypesDst.name}")
         val writer = bodyTypesDst.bufferedWriter()
         val refTableNames = contents[1].split(",")
         val columnNames = contents[2].split(",")
@@ -116,6 +119,7 @@ abstract class CsvToLbScriptTask : DefaultTask() {
     private fun processDescriptions(tableName: String, contents: List<String>) {
         val fileSubPath = contents[0].split(",")[0]
         val bodyTypesDst = Path("$lbsRoot$fileSubPath/${tableName.lowercase()}_description.xml")
+        logger.lifecycle("Writing script file: ${bodyTypesDst.name}")
         val writer = bodyTypesDst.bufferedWriter()
         val offset = contents[2].split(",").indexOf("RU_NAME")
         writer.write("$HEADER\n")
