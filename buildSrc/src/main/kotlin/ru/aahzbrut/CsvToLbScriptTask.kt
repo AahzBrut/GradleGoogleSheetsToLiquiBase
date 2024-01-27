@@ -2,27 +2,32 @@ package ru.aahzbrut
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import freemarker.template.Configuration
 import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.TaskAction
-import java.io.BufferedWriter
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse.BodyHandlers
-import kotlin.io.path.*
-import kotlin.math.min
+import kotlin.io.path.Path
+import kotlin.io.path.createDirectories
+import kotlin.io.path.exists
+import kotlin.io.path.readText
 
 
 @Suppress("kotlin:S1192")
 abstract class CsvToLbScriptTask : DefaultTask() {
     @Input
     var author = ""
+
     @Input
     var spreadSheetId = ""
+
     @Input
     var lbsRoot = ""
+
     @InputFile
     var googleApiKeyPath = Path("")
 
@@ -40,6 +45,10 @@ abstract class CsvToLbScriptTask : DefaultTask() {
 
         val objectMapper = ObjectMapper()
         val resulBody = objectMapper.readValue<Map<String, Any>>(result.body())
+
+        val configuration = Configuration(Configuration.VERSION_2_3_32)
+        configuration.setDirectoryForTemplateLoading(Path("${project.rootDir}/buildSrc/src/main/resources/templates").toFile())
+        configuration.defaultEncoding = "UTF-8"
 
         resulBody["sheets"]?.let { sheets ->
             (sheets as List<*>).forEach { properties ->
@@ -60,107 +69,30 @@ abstract class CsvToLbScriptTask : DefaultTask() {
                         .send(sheetRequest, BodyHandlers.ofString())
 
                     val contents = sheetResult.body().split("\r?\n|\r".toRegex())
-                    processDictionary(title.camelToSnakeCase().uppercase(), contents)
+                    processSheet(contents, title, configuration)
                 }
             }
         }
     }
 
-    private fun processDictionary(tableName: String, contents: List<String>) {
-        val fileSubPath = contents[0].split(",")[0]
-        val bodyTypesDst = Path("$lbsRoot$fileSubPath/${tableName.lowercase()}.xml")
-        if (!bodyTypesDst.exists()) {
-            bodyTypesDst.parent.createDirectories()
-            bodyTypesDst.createFile()
+    private fun processSheet(contents: List<String>, title: String, configuration: Configuration) {
+        val sheetData = contents.map { row -> row.split(",") }
+        val sheetObject = sheetData.toSheet(title, author, Path(lbsRoot))
+        if (!sheetObject.dictionaryPath.parent.exists()) {
+            sheetObject.dictionaryPath.parent.createDirectories()
         }
-        logger.lifecycle("Writing script file: ${bodyTypesDst.name}")
-        val writer = bodyTypesDst.bufferedWriter()
-        val refTableNames = contents[1].split(",")
-        val columnNames = contents[2].split(",")
-        val offset = columnNames.indexOf("RU_NAME")
-        writer.write("$HEADER\n")
-        writer.write("    <changeSet author=\"$author\" id=\"$tableName-001\">\n")
-        contents.drop(3).forEach { line ->
-            val columns = line.split(",")
-            writer.write("        <insert tableName=\"$tableName\">\n")
-            processRow(refTableNames, writer, columns, offset, columnNames)
-            writer.write("        </insert>\n")
-        }
-        writer.write("    </changeSet>\n")
-        writer.write(FOOTER)
-        writer.flush()
-        writer.close()
-        if (offset > 0) processDescriptions(tableName, contents)
-    }
+        val tableTemplate = configuration.getTemplate("dictionary_template.ftlh")
+        val tableOutput = sheetObject.dictionaryPath.toFile().bufferedWriter()
+        tableTemplate.process(sheetObject, tableOutput)
+        tableOutput.flush()
+        tableOutput.close()
 
-    private fun processRow(
-        refTableNames: List<String>,
-        writer: BufferedWriter,
-        columns: List<String>,
-        offset: Int,
-        columnNames: List<String>
-    ) {
-        if (refTableNames[0].isBlank()) {
-            writer.write("            <column name=\"CODE\" value=\"${columns[0]}\"/>\n")
-        } else {
-            writer.write("            <column name=\"${columnNames[0]}\" valueComputed=\"SELECT ${refTableNames[0]}_ID FROM \${default-schema}.${refTableNames[0]} WHERE CODE = '${columns[0]}'\"/>\n")
+        if (sheetObject.hasDescription) {
+            val descriptionTemplate = configuration.getTemplate("description_template.ftlh")
+            val descriptionOutput = sheetObject.descriptionPath.toFile().bufferedWriter()
+            descriptionTemplate.process(sheetObject, descriptionOutput)
+            descriptionOutput.flush()
+            descriptionOutput.close()
         }
-        for (i in 1 until min(columns.size, if (offset == -1) columns.size else offset)) {
-            if (columns[i].isNotBlank()) {
-                if (refTableNames[i].isNotBlank()) {
-                    writer.write("            <column name=\"${columnNames[i]}\" valueComputed=\"SELECT ${refTableNames[i]}_ID FROM \${default-schema}.${refTableNames[i]} WHERE CODE = '${columns[i]}'\"/>\n")
-                } else {
-                    writer.write("            <column name=\"${columnNames[i]}\" value=\"${columns[i]}\"/>\n")
-                }
-            }
-        }
-    }
-
-    private fun processDescriptions(tableName: String, contents: List<String>) {
-        val fileSubPath = contents[0].split(",")[0]
-        val bodyTypesDst = Path("$lbsRoot$fileSubPath/${tableName.lowercase()}_description.xml")
-        logger.lifecycle("Writing script file: ${bodyTypesDst.name}")
-        val writer = bodyTypesDst.bufferedWriter()
-        val offset = contents[2].split(",").indexOf("RU_NAME")
-        writer.write("$HEADER\n")
-        writer.write("    <changeSet author=\"$author\" id=\"${tableName}_DESCRIPTION-001\">\n")
-        contents.drop(3).forEach { line ->
-            val columns = line.split(",")
-            writer.write("        <insert tableName=\"${tableName}_DESCRIPTION\">\n")
-            writer.write("            <column name=\"${tableName}_ID\" valueComputed=\"SELECT ${tableName}_ID FROM \${default-schema}.$tableName WHERE CODE = '${columns[0]}'\"/>\n")
-            writer.write("            <column name=\"LANGUAGE_ID\" valueComputed=\"SELECT LANGUAGE_ID FROM \${default-schema}.LANGUAGE WHERE CODE = 'RU'\"/>\n")
-            writer.write("            <column name=\"NAME\" value=\"${columns[offset].replace("|", ",")}\"/>\n")
-            writer.write(
-                "            <column name=\"DESCRIPTION\" value=\"${
-                    columns[offset + 1].replace(
-                        "|",
-                        ","
-                    )
-                }\"/>\n"
-            )
-            writer.write("        </insert>\n")
-            writer.write("        <insert tableName=\"${tableName}_DESCRIPTION\">\n")
-            writer.write("            <column name=\"${tableName}_ID\" valueComputed=\"SELECT ${tableName}_ID FROM \${default-schema}.$tableName WHERE CODE = '${columns[0]}'\"/>\n")
-            writer.write("            <column name=\"LANGUAGE_ID\" valueComputed=\"SELECT LANGUAGE_ID FROM \${default-schema}.LANGUAGE WHERE CODE = 'EN'\"/>\n")
-            writer.write("            <column name=\"NAME\" value=\"${columns[offset + 2].replace("|", ",")}\"/>\n")
-            writer.write(
-                "            <column name=\"DESCRIPTION\" value=\"${
-                    columns[offset + 3].replace(
-                        "|",
-                        ","
-                    )
-                }\"/>\n"
-            )
-            writer.write("        </insert>\n")
-        }
-        writer.write("    </changeSet>\n")
-        writer.write(FOOTER)
-        writer.flush()
-        writer.close()
-    }
-
-    private fun String.camelToSnakeCase(): String {
-        val pattern = "(?<=.)[A-Z]".toRegex()
-        return this.replace(pattern, "_$0").lowercase()
     }
 }
